@@ -1,5 +1,7 @@
 # copilot-extauth
 
+
+
 Envoy ext_authz service so each user reaches GitHub Copilot through Agent Router with **their own** GitHub identity.
 
 ```
