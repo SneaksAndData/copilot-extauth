@@ -1,0 +1,20 @@
+name: Release a new version
+
+on: workflow_dispatch
+
+jobs:
+  create_release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create Release
+        uses: SneaksAndData/github-actions/semver_release@e3f4ea513c548adf4e774364872966d0d4a3d2fe # v0.1.12
+        with:
+          major_v: 1
+          minor_v: 1

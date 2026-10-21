@@ -28,7 +28,7 @@ dynamic metadata, never as a client-controllable header.
 ### 1. Deploy
 
 ```bash
-docker build -t IMAGE . && docker push IMAGE
+docker build -f .container/Dockerfile -t IMAGE . && docker push IMAGE
 # edit the placeholders in k8s.yaml (NAMESPACE, MY-GATEWAY, MY-GATEWAY-CONFIG, COPILOT-BACKEND, IMAGE)
 kubectl apply -f k8s.yaml
 ```

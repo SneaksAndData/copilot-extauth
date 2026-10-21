@@ -15,7 +15,7 @@ h upgrade -i aieg oci://docker.io/envoyproxy/ai-gateway-helm --version "$AIGW_VE
   -n envoy-ai-gateway-system --create-namespace --wait --timeout 5m
 
 echo ">> build + load copilot-extauth"
-docker build -q -t copilot-extauth:e2e .. >/dev/null
+docker build -q -t copilot-extauth:e2e -f ../.container/Dockerfile .. >/dev/null
 kind load docker-image copilot-extauth:e2e --name "$KIND_CLUSTER"
 
 echo ">> apply manifests"
