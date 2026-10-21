@@ -1,0 +1,194 @@
+# Local e2e: Copilot routed through Agent Router, authenticated with each caller's own GitHub token.
+# Applied by setup.sh into the kind cluster (namespace copilot-e2e).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: copilot-e2e
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: copilot-e2e
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: copilot-e2e
+  namespace: copilot-e2e
+  annotations:
+    aigateway.envoyproxy.io/gateway-config: copilot-e2e
+spec:
+  gatewayClassName: copilot-e2e
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+# Agent prompts (system prompt + tools + history) are far above Envoy's 32KiB default buffer,
+# which otherwise yields 413 request_payload_too_large.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: copilot-e2e-buffer
+  namespace: copilot-e2e
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: copilot-e2e
+  connection:
+    bufferLimit: 50Mi
+  http2:
+    initialStreamWindowSize: 16Mi
+    initialConnectionWindowSize: 24Mi
+---
+# Forward ext_authz dynamic metadata into the AI Gateway processor (required for credentialOverride).
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: GatewayConfig
+metadata:
+  name: copilot-e2e
+  namespace: copilot-e2e
+spec:
+  extProc:
+    metadataForwardingNamespaces:
+      - envoy.filters.http.ext_authz
+---
+# Catch-all route: every model goes to Copilot.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: copilot-e2e
+  namespace: copilot-e2e
+spec:
+  parentRefs:
+    - name: copilot-e2e
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    - backendRefs:
+        - name: copilot
+      timeouts:
+        request: 600s
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: copilot
+  namespace: copilot-e2e
+spec:
+  schema:
+    name: OpenAI
+    prefix: "/" # Copilot serves /chat/completions, not /v1/chat/completions
+  backendRef:
+    name: copilot
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: copilot
+  namespace: copilot-e2e
+spec:
+  endpoints:
+    - fqdn:
+        hostname: api.githubcopilot.com
+        port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: copilot
+  namespace: copilot-e2e
+spec:
+  targetRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: copilot
+  validation:
+    wellKnownCACertificates: System
+    hostname: api.githubcopilot.com
+---
+# Placeholder static credential. It is never used: fallbackToConfigured is false, so a request
+# without a per-user credential gets a 401 instead of the shared key.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: copilot-placeholder
+  namespace: copilot-e2e
+stringData:
+  apiKey: not-used
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: BackendSecurityPolicy
+metadata:
+  name: copilot
+  namespace: copilot-e2e
+spec:
+  targetRefs:
+    - group: aigateway.envoyproxy.io
+      kind: AIServiceBackend
+      name: copilot
+  type: APIKey
+  apiKey:
+    secretRef:
+      name: copilot-placeholder
+  credentialOverride:
+    fromDynamicMetadata:
+      namespace: envoy.filters.http.ext_authz
+      key: x-aigw-api-key
+      fallbackToConfigured: false
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: copilot-extauth
+  namespace: copilot-e2e
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: copilot-e2e
+  extAuth:
+    failOpen: false
+    headersToExtAuth: [authorization, x-github-token]
+    grpc:
+      backendRefs:
+        - name: copilot-extauth
+          port: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copilot-extauth
+  namespace: copilot-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: copilot-extauth }
+  template:
+    metadata:
+      labels: { app: copilot-extauth }
+    spec:
+      containers:
+        - name: copilot-extauth
+          image: copilot-extauth:e2e
+          imagePullPolicy: Never
+          ports: [{ containerPort: 9001, name: grpc }]
+          env:
+            - { name: TOKEN_MODE, value: auto }
+            - { name: ALLOWED_ORG, value: "" }
+          readinessProbe: { grpc: { port: 9001 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: copilot-extauth
+  namespace: copilot-e2e
+spec:
+  selector: { app: copilot-extauth }
+  ports:
+    - { name: grpc, port: 9001, targetPort: 9001, appProtocol: grpc }

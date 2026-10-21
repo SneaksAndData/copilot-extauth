@@ -1,0 +1,115 @@
+# Replace: NAMESPACE (where your Gateway lives), MY-GATEWAY, MY-GATEWAY-CONFIG,
+# COPILOT-BACKEND (your existing AIServiceBackend for Copilot), IMAGE, ALLOWED_ORG.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copilot-extauth
+  namespace: NAMESPACE
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: copilot-extauth }
+  template:
+    metadata:
+      labels: { app: copilot-extauth }
+    spec:
+      containers:
+        - name: copilot-extauth
+          image: IMAGE # e.g. ghcr.io/your-org/copilot-extauth:0.1.0
+          ports: [{ containerPort: 9001, name: grpc }]
+          env:
+            - { name: TOKEN_MODE, value: auto }              # auto | exchange | passthrough
+            - { name: ALLOWED_ORG, value: "" }               # e.g. "acme"; empty = any Copilot user
+            - { name: GITHUB_API, value: "https://api.github.com" } # GHE.com: https://api.<tenant>.ghe.com
+          readinessProbe: { grpc: { port: 9001 } }
+          livenessProbe: { grpc: { port: 9001 } }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: copilot-extauth
+  namespace: NAMESPACE
+spec:
+  selector: { app: copilot-extauth }
+  ports:
+    - { name: grpc, port: 9001, targetPort: 9001, appProtocol: grpc }
+---
+# Wire ext_authz in front of the AI Gateway processor. Target the Copilot HTTPRoute
+# (generated with the same name as your AIGatewayRoute) instead of the Gateway if other
+# providers share this Gateway and should not require a GitHub token.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: copilot-extauth
+  namespace: NAMESPACE
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: MY-GATEWAY
+  extAuth:
+    failOpen: false
+    headersToExtAuth: [authorization, x-github-token]
+    grpc:
+      backendRefs:
+        - name: copilot-extauth
+          port: 9001
+---
+# Agent prompts exceed Envoy's 32KiB default buffer (413 request_payload_too_large otherwise).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: copilot-buffer
+  namespace: NAMESPACE
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: MY-GATEWAY
+  connection:
+    bufferLimit: 50Mi
+  http2:
+    initialStreamWindowSize: 16Mi
+    initialConnectionWindowSize: 24Mi
+---
+# Let Envoy forward ext_authz metadata into the AI Gateway processor.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: GatewayConfig
+metadata:
+  name: MY-GATEWAY-CONFIG # referenced by annotation aigateway.envoyproxy.io/gateway-config on the Gateway
+  namespace: NAMESPACE
+spec:
+  extProc:
+    metadataForwardingNamespaces:
+      - envoy.filters.http.ext_authz
+---
+# Your Copilot AIServiceBackend must use schema {name: OpenAI, prefix: "/"}: Copilot serves
+# /chat/completions, and the default "v1" prefix yields a 404.
+# Your existing policy, plus credentialOverride. Start with fallbackToConfigured: true
+# during rollout, then set it to false so the shared secret is never used.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: BackendSecurityPolicy
+metadata:
+  name: copilot-apikey
+  namespace: NAMESPACE
+spec:
+  targetRefs:
+    - group: aigateway.envoyproxy.io
+      kind: AIServiceBackend
+      name: COPILOT-BACKEND
+  type: APIKey
+  apiKey:
+    secretRef:
+      name: copilot-apikey # existing secret; becomes fallback only
+  credentialOverride:
+    fromDynamicMetadata:
+      namespace: envoy.filters.http.ext_authz
+      key: x-aigw-api-key
+      fallbackToConfigured: false

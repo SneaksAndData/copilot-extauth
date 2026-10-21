@@ -1,0 +1,68 @@
+# Copilot via Agent Router with per-user GitHub credentials.
+# Render: d2 --layout elk architecture.d2 architecture.svg
+direction: down
+
+classes: {
+  ext: {style: {fill: "#f6f8fa"; stroke: "#57606a"; border-radius: 8}}
+  ours: {style: {fill: "#dafbe1"; stroke: "#1a7f37"; stroke-width: 2; border-radius: 8}}
+  filter: {style: {fill: "#ddf4ff"; stroke: "#0969da"; border-radius: 4}}
+  cp: {style: {fill: "#fff8c5"; stroke: "#9a6700"; border-radius: 4}}
+}
+
+client: Developer machine {
+  class: ext
+  cli: Copilot CLI (BYOK)\nCOPILOT_PROVIDER_BASE_URL=.../v1\nAPI key = gh auth token
+}
+
+k8s: Kubernetes cluster {
+  style.fill: "#ffffff"
+
+  envoy: Envoy proxy (Gateway data plane) {
+    style.fill: "#f0f6ff"
+    direction: right
+    listener: HTTP listener :80\nbufferLimit 50Mi (ClientTrafficPolicy) {class: filter}
+    extauthz: "1. envoy.filters.http.ext_authz\n(SecurityPolicy.extAuth)" {class: filter}
+    extproc: "2. AI Gateway ext_proc\n(Agent Router processor)" {class: filter}
+    router: "3. router → upstream cluster\n(Backend + BackendTLSPolicy)" {class: filter}
+    md: "Dynamic metadata\nnamespace: envoy.filters.http.ext_authz\nx-aigw-api-key = credential" {shape: cylinder; class: cp}
+
+    listener -> extauthz -> extproc -> router: request
+    extauthz -> md: writes
+    md -> extproc: forwarded\n(GatewayConfig.metadataForwardingNamespaces)
+  }
+
+  extauth: copilot-extauth (gRPC :9001) {
+    class: ours
+    shape: hexagon
+  }
+  cache: Token cache\nsha256(gh token) → credential {shape: stored_data; class: ours}
+  extauth -> cache
+
+  cp: Control plane {
+    class: cp
+    ctrl: ai-gateway-controller
+    eg: envoy-gateway
+    crds: |md
+      - AIGatewayRoute / AIServiceBackend (prefix "/")
+      - BackendSecurityPolicy: APIKey + credentialOverride
+        fromDynamicMetadata, fallbackToConfigured: false
+      - GatewayConfig, SecurityPolicy, ClientTrafficPolicy
+    |
+    crds -> ctrl
+    crds -> eg
+    ctrl <-> eg: extension server hooks
+  }
+  cp.eg -> envoy: xDS {style.stroke-dash: 4}
+}
+
+github: GitHub {
+  class: ext
+  api: api.github.com\n/copilot_internal/v2/token\n/user, /user/memberships/orgs
+  copilot: api.githubcopilot.com\n/chat/completions
+}
+
+client.cli -> k8s.envoy.listener: "Authorization: Bearer <gh token>\n(port-forward localhost:8080)"
+k8s.envoy.extauthz -> k8s.extauth: CheckRequest (headers)
+k8s.extauth -> k8s.envoy.extauthz: "CheckResponse OK\n+ dynamic_metadata\n+ strip x-github-token\n+ Copilot headers" {style.stroke: "#1a7f37"}
+k8s.extauth -> github.api: "exchange (auto) or validate (passthrough)"
+k8s.envoy.router -> github.copilot: "Authorization: Bearer <credential>\n(TLS)"
