@@ -23,17 +23,17 @@ func fakeGitHub(t *testing.T, exchanges *int32) *httptest.Server {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			w.Write([]byte(`{"token":"tid=copilot-session","expires_at":` +
+			_, _ = w.Write([]byte(`{"token":"tid=copilot-session","expires_at":` +
 				strconv.FormatInt(time.Now().Add(30*time.Minute).Unix(), 10) + `}`))
 		case "/user":
 			if auth == "token gho_good" || auth == "token gho_cli" {
-				w.Write([]byte(`{"login":"u"}`))
+				_, _ = w.Write([]byte(`{"login":"u"}`))
 				return
 			}
 			w.WriteHeader(http.StatusUnauthorized)
 		case "/user/memberships/orgs/acme":
 			if auth == "token gho_good" || auth == "token gho_cli" {
-				w.Write([]byte(`{"state":"active"}`))
+				_, _ = w.Write([]byte(`{"state":"active"}`))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)

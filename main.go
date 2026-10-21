@@ -129,7 +129,7 @@ func (s *server) githubGET(ctx context.Context, path, ghToken string, out any) (
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 || out == nil {
 		return resp.StatusCode, nil
 	}
