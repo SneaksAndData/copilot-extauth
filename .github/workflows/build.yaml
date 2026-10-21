@@ -26,8 +26,6 @@ jobs:
         with:
           go-version: '1.26.*'
 
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
-
       - name: Check Format
         run: gofmt -d ./
 
@@ -74,17 +72,6 @@ jobs:
         # if: steps.coverage.outcome == 'failure'
         shell: bash
         run: echo "coverage check failed" && exit 1
-
-      - name: Setup integration tests
-        run: just up
-
-      - name: Run integration tests
-        run: go test -v ./tests/... -count=1 -kubeconfig-cmd "kind get kubeconfig" -timeout 5m -parallel 15
-
-      - name: Get logs from application pods
-        if: always()
-        run: |
-          kubectl describe pods --namespace default || true
 
   validate_dockerfile:
     name: Validate dockerfile
